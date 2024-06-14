@@ -54,9 +54,8 @@ DWORD getProcessIdByName(const std::wstring &name)
     return 0;
 }
 
-IUIAutomationCondition *createCondition(const DWORD processID)
+IUIAutomationCondition *createProcessIdCondition(const DWORD processID)
 {
-
     VARIANT variant;
     VariantInit(&variant);
     variant.vt = VT_I4;
@@ -64,6 +63,20 @@ IUIAutomationCondition *createCondition(const DWORD processID)
 
     IUIAutomationCondition *condition = nullptr;
     HRESULT result = g_pAutomation->CreatePropertyCondition(UIA_ProcessIdPropertyId, variant, &condition);
+    VariantClear(&variant);
+
+    if (FAILED(result)) return nullptr;
+    return condition;
+}
+
+IUIAutomationCondition *createAutomationIdCondition(const std::wstring &automationID)
+{
+    VARIANT variant;
+    variant.vt = VT_BSTR;
+    variant.bstrVal = SysAllocString(automationID.c_str());
+
+    IUIAutomationCondition *condition = nullptr;
+    HRESULT result = g_pAutomation->CreatePropertyCondition(UIA_AutomationIdPropertyId, variant, &condition);
     VariantClear(&variant);
 
     if (FAILED(result)) return nullptr;
@@ -82,7 +95,7 @@ int main()
     HRESULT res = g_pAutomation->GetRootElement(&root);
     if (FAILED(res))
     {
-        std::wcout << "Failed" << std::endl;
+        std::wcerr << "Failed" << std::endl;
         return -1;
     }
     std::wcout << "Successfully got root element" << std::endl;
@@ -90,27 +103,44 @@ int main()
     DWORD processId = getProcessIdByName(L"firefox.exe");
     if (processId == 0)
     {
-        std::wcout << "Process not found" << std::endl;
+        std::wcerr << "Process not found" << std::endl;
         return -1;
     }
     std::wcout << "Process ID: " << processId << std::endl;
 
-    IUIAutomationCondition *condition = createCondition(processId);
+    IUIAutomationCondition *condition = createProcessIdCondition(processId);
     if (!condition)
     {
-        std::wcout << "Condition not created" << std::endl;
+        std::wcerr << "Condition not created" << std::endl;
         return -1;
     }
     std::wcout << "Successfully created condition" << std::endl;
 
     IUIAutomationElement *foundElement = nullptr;
     res = root->FindFirst(TreeScope_Children, condition, &foundElement);
-    if (SUCCEEDED(res) && foundElement) std::wcout << "Successfully found" << std::endl;
-    else
+    if (FAILED(res) || !foundElement)
     {
-        std::wcout << "Not found" << std::endl;
+        std::wcerr << "Specified browser not found" << std::endl;
         return -1;
     }
+    std::wcout << "Browser found" << std::endl;
+
+    IUIAutomationCondition *searchBoxCondition = createAutomationIdCondition(L"gsr");
+    if (!searchBoxCondition)
+    {
+        std::wcerr << "Cannot create search box condition" << std::endl;
+        return -1;
+    }
+    std::wcout << "Search box condition created" << std::endl;
+
+    IUIAutomationElement *searchBox = nullptr;
+    res = foundElement->FindFirst(TreeScope_Subtree, searchBoxCondition, &searchBox);
+    if (FAILED(res) || !searchBox)
+    {
+        std::wcerr << "Search box not found" << std::endl;
+        return -1;
+    }
+    std::wcout << "Search box successfully found" << std::endl;
 
     return 0;
 }
