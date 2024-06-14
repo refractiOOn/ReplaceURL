@@ -10,7 +10,7 @@
 
 IUIAutomation *g_pAutomation;
 
-BOOL InitializeUIAutomation()
+BOOL initializeUIAutomation()
 {
     CoInitialize(NULL);
     HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER,
@@ -18,7 +18,21 @@ BOOL InitializeUIAutomation()
     return (SUCCEEDED(hr));
 }
 
-DWORD GetProcessIdByName(const std::wstring &name)
+std::wstring getProcessName(const DWORD processID)
+{
+    HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
+    if (!handle) return {};
+
+    std::wstring processName(MAX_PATH, L'\0');
+    const DWORD nameSize = GetModuleBaseNameW(handle, 0, &processName[0], processName.length());
+    CloseHandle(handle);
+    if (!nameSize) return {};
+
+    processName.resize(nameSize);
+    return processName;
+}
+
+DWORD getProcessIdByName(const std::wstring &name)
 {
     DWORD processes[1024], bytesReturned;
     if (!EnumProcesses(processes, sizeof(processes), &bytesReturned))
@@ -33,15 +47,7 @@ DWORD GetProcessIdByName(const std::wstring &name)
         const DWORD processID = processes[i];
         if (!processID) continue;
 
-        HANDLE processHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
-        if (!processHandle) continue;
-
-        std::wstring currentProcessName(MAX_PATH, L'\0');
-        const DWORD nameSize = GetModuleBaseNameW(processHandle, 0, &currentProcessName[0], currentProcessName.length());
-        CloseHandle(processHandle);
-        if (!nameSize) continue;
-
-        currentProcessName.resize(nameSize);
+        const std::wstring currentProcessName = getProcessName(processID);
         if (currentProcessName == name) return processID;
     }
 
@@ -70,7 +76,7 @@ IUIAutomationCondition *createCondition(const DWORD processID)
 
 int main()
 {
-    InitializeUIAutomation();
+    initializeUIAutomation();
 
     IUIAutomationElement *root = nullptr;
     HRESULT res = g_pAutomation->GetRootElement(&root);
@@ -81,7 +87,7 @@ int main()
     }
     std::wcout << "Successfully got root element" << std::endl;
 
-    DWORD processId = GetProcessIdByName(L"msedge.exe"); // Replace with your target process name
+    DWORD processId = getProcessIdByName(L"firefox.exe");
     if (processId == 0)
     {
         std::wcout << "Process not found" << std::endl;
