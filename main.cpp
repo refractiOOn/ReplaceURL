@@ -8,6 +8,10 @@
 
 #pragma comment(lib, "comsuppw.lib")
 
+const std::wstring CHROME(L"chrome.exe");
+const std::wstring MSEDGE(L"msedge.exe");
+const std::wstring FIREFOX(L"firefox.exe");
+
 IUIAutomation *g_pAutomation;
 
 BOOL initializeUIAutomation()
@@ -20,7 +24,7 @@ BOOL initializeUIAutomation()
 
 std::wstring getProcessName(const DWORD processID)
 {
-    HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
+    const HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
     if (!handle) return {};
 
     std::wstring processName(MAX_PATH, L'\0');
@@ -41,7 +45,7 @@ DWORD getProcessIdByName(const std::wstring &name)
         return 0;
     }
 
-    DWORD amount = bytesReturned / sizeof(DWORD);
+    const DWORD amount = bytesReturned / sizeof(DWORD);
     for (size_t i = 0; i < amount; ++i)
     {
         const DWORD processID = processes[i];
@@ -69,20 +73,6 @@ IUIAutomationCondition *createProcessIdCondition(const DWORD processID)
     return condition;
 }
 
-IUIAutomationCondition *createAutomationIdCondition(const std::wstring &automationID)
-{
-    VARIANT variant;
-    variant.vt = VT_BSTR;
-    variant.bstrVal = SysAllocString(automationID.c_str());
-
-    IUIAutomationCondition *condition = nullptr;
-    HRESULT result = g_pAutomation->CreatePropertyCondition(UIA_AutomationIdPropertyId, variant, &condition);
-    VariantClear(&variant);
-
-    if (FAILED(result)) return nullptr;
-    return condition;
-}
-
 IUIAutomationCondition *createControlTypeCondition(const CONTROLTYPEID id)
 {
     VARIANT variant;
@@ -97,125 +87,63 @@ IUIAutomationCondition *createControlTypeCondition(const CONTROLTYPEID id)
     return condition;
 }
 
-class EventHandler: public IUIAutomationPropertyChangedEventHandler
+void modifySearchRequest(std::wstring &request)
 {
-private:
-    LONG _refCount;
-
-public:
-    int _eventCount;
-
-    //Constructor.
-    EventHandler(): _refCount(1), _eventCount(0)
-    {
-    }
-
-    //IUnknown methods.
-    ULONG STDMETHODCALLTYPE AddRef()
-    {
-        ULONG ret = InterlockedIncrement(&_refCount);
-        return ret;
-    }
-
-    ULONG STDMETHODCALLTYPE Release()
-    {
-        ULONG ret = InterlockedDecrement(&_refCount);
-        if (ret == 0)
-        {
-            delete this;
-            return 0;
-        }
-        return ret;
-    }
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppInterface)
-    {
-        if (riid == __uuidof(IUnknown))
-            *ppInterface=static_cast<IUIAutomationPropertyChangedEventHandler*>(this);
-        else if (riid == __uuidof(IUIAutomationPropertyChangedEventHandler))
-            *ppInterface=static_cast<IUIAutomationPropertyChangedEventHandler*>(this);
-        else
-        {
-            *ppInterface = NULL;
-            return E_NOINTERFACE;
-        }
-        this->AddRef();
-        return S_OK;
-    }
-
-    // IUIAutomationPropertyChangedEventHandler methods.
-    HRESULT STDMETHODCALLTYPE HandlePropertyChangedEvent(IUIAutomationElement* pSender, PROPERTYID propertyID, VARIANT newValue)
-    {
-        _eventCount++;
-        if (propertyID == UIA_ValueValuePropertyId)
-            wprintf(L">> Property Value changed! ");
-        else
-            wprintf(L">> Property (%d) changed! ", propertyID);
-
-        if (newValue.vt == VT_I4)
-            wprintf(L"(0x%0.8x) ", newValue.lVal);
-
-        wprintf(L"(count: %d)\n", _eventCount);
-        return S_OK;
-    }
-};
-
-// chrome.exe
-// firefox.exe
-// msedge.exe
+    const std::wstring toFind = L"search?q=", toInsert = L"test:";
+    request.insert(request.find(toFind) + toFind.size(), toInsert);
+}
 
 int main()
 {
     initializeUIAutomation();
 
-    IUIAutomationElement *root = nullptr;
-    HRESULT res = g_pAutomation->GetRootElement(&root);
+    IUIAutomationElement *rootElement = nullptr;
+    HRESULT res = g_pAutomation->GetRootElement(&rootElement);
     if (FAILED(res))
     {
         std::wcerr << "Failed to get root element" << std::endl;
         return -1;
     }
 
-    DWORD processId = getProcessIdByName(L"msedge.exe");
+    DWORD processId = getProcessIdByName(MSEDGE);
     if (processId == 0)
     {
         std::wcerr << "Process not found" << std::endl;
         return -1;
     }
 
-    IUIAutomationCondition *condition = createProcessIdCondition(processId);
-    if (!condition)
+    IUIAutomationCondition *browserCondition = createProcessIdCondition(processId);
+    if (!browserCondition)
     {
         std::wcerr << "Condition not created" << std::endl;
         return -1;
     }
 
-    IUIAutomationElement *foundElement = nullptr;
-    res = root->FindFirst(TreeScope_Children, condition, &foundElement);
-    if (FAILED(res) || !foundElement)
+    IUIAutomationElement *browserElement = nullptr;
+    res = rootElement->FindFirst(TreeScope_Children, browserCondition, &browserElement);
+    if (FAILED(res) || !browserElement)
     {
         std::wcerr << "Specified browser not found" << std::endl;
         return -1;
     }
 
-    // IUIAutomationCondition *cond = createControlTypeCondition(UIA_DocumentControlTypeId);
-    IUIAutomationCondition *cond = createControlTypeCondition(UIA_EditControlTypeId);
-    if (!cond)
+    IUIAutomationCondition *controlCondition = createControlTypeCondition(UIA_EditControlTypeId);
+    if (!controlCondition)
     {
-        std::wcerr << "Cannot create document control condition" << std::endl;
+        std::wcerr << "Cannot create edit control condition" << std::endl;
         return -1;
     }
 
-    IUIAutomationElement *editControl = nullptr;
-    res = foundElement->FindFirst(TreeScope_Subtree, cond, &editControl);
-    if (FAILED(res) || !editControl)
+    IUIAutomationElement *editControlElement = nullptr;
+    res = browserElement->FindFirst(TreeScope_Subtree, controlCondition, &editControlElement);
+    if (FAILED(res) || !editControlElement)
     {
         std::wcerr << "Edit control not found" << std::endl;
         return -1;
     }
 
     VARIANT value;
-    res = editControl->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &value);
+    res = editControlElement->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &value);
     if (FAILED(res))
     {
         std::wcout << L"Failed to get property value." << std::endl;
@@ -226,12 +154,10 @@ int main()
     VariantClear(&value);
 
     std::wstring val(value.bstrVal);
-
-    const std::wstring toFind = L"search?q=", toInsert = L"test:";
-    val.insert(val.find(toFind) + toFind.size(), toInsert);
+    modifySearchRequest(val);
 
     IUIAutomationValuePattern* valuePattern = nullptr;
-    res = editControl->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&valuePattern));
+    res = editControlElement->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&valuePattern));
     if (FAILED(res))
     {
         std::wcout << "Failed to get value pattern" << std::endl;
@@ -241,11 +167,26 @@ int main()
 
     BOOL isReadOnly;
     res = valuePattern->get_CurrentIsReadOnly(&isReadOnly);
+    if (FAILED(res))
+    {
+        std::wcout << "Failed to get isReadOnly property" << std::endl;
+        return -1;
+    }
+
     if (isReadOnly)
     {
         std::wcerr << "Selected value is read only" << std::endl;
         return -1;
     }
+
+    valuePattern->Release();
+    editControlElement->Release();
+    controlCondition->Release();
+    browserElement->Release();
+    rootElement->Release();
+    browserCondition->Release();
+    g_pAutomation->Release();
+    CoUninitialize();
 
     return 0;
 }
