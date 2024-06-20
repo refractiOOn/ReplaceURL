@@ -6,6 +6,8 @@
 #include <psapi.h>
 #include <iostream>
 
+#include "scope_guard.hpp"
+
 #pragma comment(lib, "comsuppw.lib")
 
 const std::wstring CHROME(L"chrome.exe");
@@ -87,6 +89,16 @@ IUIAutomationCondition *createControlTypeCondition(const CONTROLTYPEID id)
     return condition;
 }
 
+bool isReadOnly(IUIAutomationValuePattern *pattern)
+{
+    BOOL result;
+    HRESULT hr = pattern->get_CurrentIsReadOnly(&result);
+    if (FAILED(hr))
+        throw std::runtime_error("Could not get IsReadOnly property");
+
+    return result;
+}
+
 void modifySearchRequest(std::wstring &request)
 {
     const std::wstring toFind = L"search?q=", toInsert = L"test:";
@@ -95,7 +107,16 @@ void modifySearchRequest(std::wstring &request)
 
 int main()
 {
-    initializeUIAutomation();
+    if (!initializeUIAutomation())
+    {
+        std::wcerr << "Failed to initialize UI Automation" << std::endl;
+        return -1;
+    }
+    auto uiaGuard = sg::make_scope_guard([]
+    {
+        g_pAutomation->Release();
+        CoUninitialize();
+    });
 
     IUIAutomationElement *rootElement = nullptr;
     HRESULT res = g_pAutomation->GetRootElement(&rootElement);
@@ -104,6 +125,7 @@ int main()
         std::wcerr << "Failed to get root element" << std::endl;
         return -1;
     }
+    auto rootGuard = sg::make_scope_guard([rootElement] { rootElement->Release(); });
 
     DWORD processId = getProcessIdByName(MSEDGE);
     if (processId == 0)
@@ -118,6 +140,7 @@ int main()
         std::wcerr << "Condition not created" << std::endl;
         return -1;
     }
+    auto browserConditionGuard = sg::make_scope_guard([browserCondition] { browserCondition->Release(); });
 
     IUIAutomationElement *browserElement = nullptr;
     res = rootElement->FindFirst(TreeScope_Children, browserCondition, &browserElement);
@@ -126,6 +149,7 @@ int main()
         std::wcerr << "Specified browser not found" << std::endl;
         return -1;
     }
+    auto browserElementGuard = sg::make_scope_guard([browserElement] { browserElement->Release(); });
 
     IUIAutomationCondition *controlCondition = createControlTypeCondition(UIA_EditControlTypeId);
     if (!controlCondition)
@@ -133,6 +157,7 @@ int main()
         std::wcerr << "Cannot create edit control condition" << std::endl;
         return -1;
     }
+    auto controlConditionGuard = sg::make_scope_guard([controlCondition] { controlCondition->Release(); });
 
     IUIAutomationElement *editControlElement = nullptr;
     res = browserElement->FindFirst(TreeScope_Subtree, controlCondition, &editControlElement);
@@ -141,6 +166,7 @@ int main()
         std::wcerr << "Edit control not found" << std::endl;
         return -1;
     }
+    auto editControlElementGuard = sg::make_scope_guard([editControlElement] { editControlElement->Release(); });
 
     VARIANT value;
     res = editControlElement->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &value);
@@ -153,40 +179,41 @@ int main()
     else std::wcout << L"Property is not a string." << std::endl;
     VariantClear(&value);
 
-    std::wstring val(value.bstrVal);
-    modifySearchRequest(val);
-
     IUIAutomationValuePattern* valuePattern = nullptr;
     res = editControlElement->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&valuePattern));
     if (FAILED(res))
     {
-        std::wcout << "Failed to get value pattern" << std::endl;
+        std::wcerr << "Failed to get value pattern" << std::endl;
         return -1;
     }
-    valuePattern->SetValue(val.data());
+    auto vpGuard = sg::make_scope_guard([valuePattern] { valuePattern->Release(); });
 
-    BOOL isReadOnly;
-    res = valuePattern->get_CurrentIsReadOnly(&isReadOnly);
+    bool readOnly;
+    try
+    {
+        readOnly = isReadOnly(valuePattern);
+    }
+    catch (const std::runtime_error &ex)
+    {
+        std::wcerr << ex.what() << std::endl;
+        return -1;
+    }
+
+    if (readOnly)
+    {
+        std::wcerr << "The value is read only" << std::endl;
+        return -1;
+    }
+
+    std::wstring val(value.bstrVal);
+    modifySearchRequest(val);
+
+    res = valuePattern->SetValue(val.data());
     if (FAILED(res))
     {
-        std::wcout << "Failed to get isReadOnly property" << std::endl;
+        std::wcerr << "Could not set new value" << std::endl;
         return -1;
     }
-
-    if (isReadOnly)
-    {
-        std::wcerr << "Selected value is read only" << std::endl;
-        return -1;
-    }
-
-    valuePattern->Release();
-    editControlElement->Release();
-    controlCondition->Release();
-    browserElement->Release();
-    rootElement->Release();
-    browserCondition->Release();
-    g_pAutomation->Release();
-    CoUninitialize();
 
     return 0;
 }
