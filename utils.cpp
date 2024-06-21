@@ -46,7 +46,7 @@ std::optional<BOOL> isPatternReadOnly(IUIAutomationValuePattern *pattern)
 
 std::wstring modifyRequest(std::wstring_view request)
 {
-    const std::wstring toFind = L"search?q=", toInsert = L"test:";
+    const std::wstring toFind = L"q=", toInsert = L"test:";
     const std::wstring result = std::wstring(request).insert(request.find(toFind) + toFind.size(), toInsert);
     return result;
 }
