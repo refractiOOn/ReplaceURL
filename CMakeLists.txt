@@ -7,6 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CXX_SOURCE_FILES
     main.cpp
     scope_guard.hpp
+    guards.hpp
+    utils.hpp utils.cpp
 )
 
 add_executable(${PROJECT_NAME} ${CXX_SOURCE_FILES})

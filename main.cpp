@@ -1,217 +1,106 @@
-#include <windows.h>
-#include <ole2.h>
-#include <uiautomation.h>
-#include <comutil.h>
-#include <TlHelp32.h>
-#include <psapi.h>
-#include <iostream>
-
+#include "utils.hpp"
 #include "scope_guard.hpp"
-
-#pragma comment(lib, "comsuppw.lib")
-
-const std::wstring CHROME(L"chrome.exe");
-const std::wstring MSEDGE(L"msedge.exe");
-const std::wstring FIREFOX(L"firefox.exe");
-
-IUIAutomation *g_pAutomation;
-
-BOOL initializeUIAutomation()
-{
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER,
-                                  __uuidof(IUIAutomation), (void**)&g_pAutomation);
-    return (SUCCEEDED(hr));
-}
-
-std::wstring getProcessName(const DWORD processID)
-{
-    const HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
-    if (!handle) return {};
-
-    std::wstring processName(MAX_PATH, L'\0');
-    const DWORD nameSize = GetModuleBaseNameW(handle, 0, &processName[0], processName.length());
-    CloseHandle(handle);
-    if (!nameSize) return {};
-
-    processName.resize(nameSize);
-    return processName;
-}
-
-DWORD getProcessIdByName(const std::wstring &name)
-{
-    DWORD processes[1024], bytesReturned;
-    if (!EnumProcesses(processes, sizeof(processes), &bytesReturned))
-    {
-        std::wcerr << "Could not get process ids" << std::endl;
-        return 0;
-    }
-
-    const DWORD amount = bytesReturned / sizeof(DWORD);
-    for (size_t i = 0; i < amount; ++i)
-    {
-        const DWORD processID = processes[i];
-        if (!processID) continue;
-
-        const std::wstring currentProcessName = getProcessName(processID);
-        if (currentProcessName == name) return processID;
-    }
-
-    return 0;
-}
-
-IUIAutomationCondition *createProcessIdCondition(const DWORD processID)
-{
-    VARIANT variant;
-    VariantInit(&variant);
-    variant.vt = VT_I4;
-    variant.lVal = processID;
-
-    IUIAutomationCondition *condition = nullptr;
-    HRESULT result = g_pAutomation->CreatePropertyCondition(UIA_ProcessIdPropertyId, variant, &condition);
-    VariantClear(&variant);
-
-    if (FAILED(result)) return nullptr;
-    return condition;
-}
-
-IUIAutomationCondition *createControlTypeCondition(const CONTROLTYPEID id)
-{
-    VARIANT variant;
-    variant.vt = VT_I4;
-    variant.lVal = id;
-
-    IUIAutomationCondition *condition = nullptr;
-    HRESULT result = g_pAutomation->CreatePropertyCondition(UIA_ControlTypePropertyId, variant, &condition);
-    VariantClear(&variant);
-
-    if (FAILED(result)) return nullptr;
-    return condition;
-}
-
-bool isReadOnly(IUIAutomationValuePattern *pattern)
-{
-    BOOL result;
-    HRESULT hr = pattern->get_CurrentIsReadOnly(&result);
-    if (FAILED(hr))
-        throw std::runtime_error("Could not get IsReadOnly property");
-
-    return result;
-}
-
-void modifySearchRequest(std::wstring &request)
-{
-    const std::wstring toFind = L"search?q=", toInsert = L"test:";
-    request.insert(request.find(toFind) + toFind.size(), toInsert);
-}
+#include <iostream>
 
 int main()
 {
-    if (!initializeUIAutomation())
+    IUIAutomation *automation = nullptr;
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER,
+                                  __uuidof(IUIAutomation), (void**)&automation);
+    if (FAILED(hr))
     {
         std::wcerr << "Failed to initialize UI Automation" << std::endl;
         return -1;
     }
-    auto uiaGuard = sg::make_scope_guard([]
+    auto automationGuard = sg::make_scope_guard([automation]
     {
-        g_pAutomation->Release();
+        automation->Release();
         CoUninitialize();
     });
 
-    IUIAutomationElement *rootElement = nullptr;
-    HRESULT res = g_pAutomation->GetRootElement(&rootElement);
-    if (FAILED(res))
+    UiaGuard<IUIAutomationElement> root(nullptr);
+    hr = automation->GetRootElement(root.ptr());
+    if (FAILED(hr))
     {
         std::wcerr << "Failed to get root element" << std::endl;
         return -1;
     }
-    auto rootGuard = sg::make_scope_guard([rootElement] { rootElement->Release(); });
 
-    DWORD processId = getProcessIdByName(MSEDGE);
-    if (processId == 0)
+    const std::wstring browserName = L"msedge.exe";
+    const std::optional<DWORD> processID = getProcessID(browserName);
+    if (!processID.has_value())
     {
-        std::wcerr << "Process not found" << std::endl;
+        std::wcerr << "Specified process not found" << std::endl;
         return -1;
     }
 
-    IUIAutomationCondition *browserCondition = createProcessIdCondition(processId);
-    if (!browserCondition)
+    UiaGuard<IUIAutomationCondition> browserCond = createCondition(automation, processID.value());
+    if (!browserCond.value())
     {
-        std::wcerr << "Condition not created" << std::endl;
+        std::wcerr << "Could not create condition by process ID" << std::endl;
         return -1;
     }
-    auto browserConditionGuard = sg::make_scope_guard([browserCondition] { browserCondition->Release(); });
 
-    IUIAutomationElement *browserElement = nullptr;
-    res = rootElement->FindFirst(TreeScope_Children, browserCondition, &browserElement);
-    if (FAILED(res) || !browserElement)
+    UiaGuard<IUIAutomationElement> browser = nullptr;
+    hr = root.value()->FindFirst(TreeScope_Children, browserCond.value(), browser.ptr());
+    if (FAILED(hr) || !browser.value())
     {
         std::wcerr << "Specified browser not found" << std::endl;
         return -1;
     }
-    auto browserElementGuard = sg::make_scope_guard([browserElement] { browserElement->Release(); });
 
-    IUIAutomationCondition *controlCondition = createControlTypeCondition(UIA_EditControlTypeId);
-    if (!controlCondition)
+    UiaGuard<IUIAutomationCondition> controlCond = createCondition(UIA_EditControlTypeId, automation);
+    if (!controlCond.value())
     {
-        std::wcerr << "Cannot create edit control condition" << std::endl;
+        std::wcerr << "Could not create condition by control type" << std::endl;
         return -1;
     }
-    auto controlConditionGuard = sg::make_scope_guard([controlCondition] { controlCondition->Release(); });
 
-    IUIAutomationElement *editControlElement = nullptr;
-    res = browserElement->FindFirst(TreeScope_Subtree, controlCondition, &editControlElement);
-    if (FAILED(res) || !editControlElement)
+    UiaGuard<IUIAutomationElement> editControl = nullptr;
+    hr = browser.value()->FindFirst(TreeScope_Subtree, controlCond.value(), editControl.ptr());
+    if (FAILED(hr) || !editControl.value())
     {
         std::wcerr << "Edit control not found" << std::endl;
         return -1;
     }
-    auto editControlElementGuard = sg::make_scope_guard([editControlElement] { editControlElement->Release(); });
 
     VARIANT value;
-    res = editControlElement->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &value);
-    if (FAILED(res))
+    hr = editControl.value()->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &value);
+    if (FAILED(hr))
     {
         std::wcout << L"Failed to get property value." << std::endl;
         return -1;
     }
-    if (value.vt == VT_BSTR) std::wcout << L"Found: " << value.bstrVal << std::endl;
-    else std::wcout << L"Property is not a string." << std::endl;
     VariantClear(&value);
 
-    IUIAutomationValuePattern* valuePattern = nullptr;
-    res = editControlElement->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&valuePattern));
-    if (FAILED(res))
+    UiaGuard<IUIAutomationValuePattern> valuePattern = nullptr;
+    hr = editControl.value()->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(valuePattern.ptr()));
+    if (FAILED(hr))
     {
-        std::wcerr << "Failed to get value pattern" << std::endl;
-        return -1;
-    }
-    auto vpGuard = sg::make_scope_guard([valuePattern] { valuePattern->Release(); });
-
-    bool readOnly;
-    try
-    {
-        readOnly = isReadOnly(valuePattern);
-    }
-    catch (const std::runtime_error &ex)
-    {
-        std::wcerr << ex.what() << std::endl;
+        std::wcerr << "Could not get value pattern" << std::endl;
         return -1;
     }
 
-    if (readOnly)
+    const std::optional<bool> readOnly = isPatternReadOnly(valuePattern.value());
+    if (!readOnly.has_value())
     {
-        std::wcerr << "The value is read only" << std::endl;
+        std::wcerr << "Could not get read only property" << std::endl;
         return -1;
     }
 
-    std::wstring val(value.bstrVal);
-    modifySearchRequest(val);
-
-    res = valuePattern->SetValue(val.data());
-    if (FAILED(res))
+    if (readOnly.value())
     {
-        std::wcerr << "Could not set new value" << std::endl;
+        std::wcerr << "The value pattern is read only" << std::endl;
+        return -1;
+    }
+
+    std::wstring newVal = modifyRequest(value.bstrVal);
+    hr = valuePattern.value()->SetValue(newVal.data());
+    if (FAILED(hr))
+    {
+        std::wcerr << "Could not set a new value" << std::endl;
         return -1;
     }
 
